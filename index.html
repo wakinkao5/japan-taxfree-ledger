@@ -1,3 +1,42 @@
 <!doctype html>
-<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#f7f5ef"><title>日本退稅旅遊記帳</title><link rel="manifest" href="./app.webmanifest"><link rel="apple-touch-icon" href="./icon-192.png"><link rel="stylesheet" href="./style.css?v=2.0"></head>
-<body><header><div class="wrap brand"><div class="logo" aria-hidden="true">旅</div><div><strong>日本退稅旅遊記帳</strong><small id="trip-title">我的旅程</small></div><button id="settings" class="version" aria-label="設定與備份">V2.0 · 設定</button></div></header><div class="print-band wrap" aria-hidden="true"><img src="./travel-print.png" alt=""></div><main class="wrap" id="app" aria-busy="true">載入帳本中…</main><div class="wrap notice" id="notice" role="status"></div><footer><nav class="wrap" aria-label="主要導覽"><button data-page="trips"><b aria-hidden="true">⌂</b>旅程</button><button data-page="entry"><b aria-hidden="true">⊕</b>記帳</button><button data-page="list"><b aria-hidden="true">☷</b>明細</button><button data-page="refund"><b aria-hidden="true">¥</b>退稅</button><button data-page="split"><b aria-hidden="true">⇄</b>分攤</button></nav></footer><script type="module" src="./app.js?v=2.0"></script></body></html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#fcf4e9">
+  <title>日本退稅旅遊記帳</title>
+  <link rel="manifest" href="./app.webmanifest">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="stylesheet" href="./style.css?v=2.1">
+</head>
+<body>
+  <header class="masthead">
+    <div class="wrap brand">
+      <div>
+        <strong>日本退稅旅遊記帳</strong>
+        <small id="trip-title">我的旅程</small>
+      </div>
+      <button id="settings" class="version" aria-label="設定與備份，V2.1">
+        <span aria-hidden="true">⚙</span> <span>設定</span><small>V2.1</small>
+      </button>
+    </div>
+  </header>
+  <div class="wrap">
+    <div class="print-band">
+      <img src="./travel-banner-v21.webp" alt="" width="1200" height="400" fetchpriority="high">
+    </div>
+  </div>
+  <main class="wrap" id="app" aria-busy="true">載入帳本中…</main>
+  <div class="wrap notice" id="notice" role="status"></div>
+  <footer>
+    <nav class="wrap" aria-label="主要導覽">
+      <button data-page="trips"><b aria-hidden="true">⌂</b>旅程</button>
+      <button data-page="entry"><b aria-hidden="true">⊕</b>記帳</button>
+      <button data-page="list"><b aria-hidden="true">☷</b>明細</button>
+      <button data-page="refund"><b aria-hidden="true">¥</b>退稅</button>
+      <button data-page="budget"><b aria-hidden="true">▤</b>預算</button>
+    </nav>
+  </footer>
+  <script type="module" src="./app.js?v=2.1"></script>
+</body>
+</html>

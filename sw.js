@@ -1,6 +1,6 @@
 const scope = self.registration.scope;
-const name = 'japan-taxfree-ledger-' + scope + '-2.0.0';
-const assets = ['./','./style.css?v=2.0','./app.js?v=2.0','./model.js?v=2.0','./storage.js?v=2.0','./travel-print.png','./app.webmanifest','./icon-192.png','./icon-512.png'];
+const name = 'japan-taxfree-ledger-' + scope + '-2.1';
+const assets = ['./','./style.css?v=2.1','./app.js?v=2.1','./model.js?v=2.1','./storage.js?v=2.1','./budget.js?v=2.1','./travel-banner-v21.webp','./app.webmanifest','./icon-192.png','./icon-512.png'];
 self.addEventListener('install', event => event.waitUntil((async () => {
   const cache = await caches.open(name);
   await cache.addAll(assets.map(asset => new Request(new URL(asset, scope), {cache:'reload'})));

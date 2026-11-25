@@ -62,7 +62,7 @@ export function settlement(records, count) {
 const isText = (v,limit=100) => typeof v==='string' && v.length<=limit;
 const nameOK = s => isText(s) && s.trim().length>0;
 const timeOK = s => isText(s) && Number.isFinite(Date.parse(s));
-const rateData = r => r && rateOK(r.value) && timeOK(r.time) && ['手動','ExchangeRate-API'].includes(r.source) && (r.next===undefined || Number.isFinite(r.next));
+const rateData = r => r && rateOK(r.value) && timeOK(r.time) && ['手動','ExchangeRate-API','實際換匯'].includes(r.source) && (r.next===undefined || Number.isFinite(r.next));
 const choices = (v, options) => v==='' || options.includes(v);
 const profile = p => p && nameOK(p.name) && choices(p.method,methods) && feeOK(p.fee) && ['tax','total'].includes(p.basis);
 const unique = items => new Set(items).size===items.length;
@@ -73,6 +73,7 @@ export function validRecord(r, count) {
   if (!r || !nameOK(r.id) || !isoDate(r.date) || !nameOK(r.store) || !isText(r.branch) || !isText(r.note,500) || !categories.includes(r.category) || !methods.includes(r.payment) || typeof r.food!=='boolean') return false;
   if (![r.total,r.net,r.tax].every(yen) || !r.total || r.net+r.tax!==r.total || !['auto','tax','total'].includes(r.input) || !rateData(r.rate)) return false;
   if (!(r.photo===null || (typeof r.photo==='string' && r.photo.length<=2500000 && /^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(r.photo)))) return false;
+  if(r.posted!=null && !yen(r.posted) || r.postedDate && !isoDate(r.postedDate) || r.receivedDate && !isoDate(r.receivedDate))return false;
   const shared = r.mode !== undefined;
   if (shared) {
     if (!modes.includes(r.mode) || !person(r.payer) || !person(r.receiver) || !Array.isArray(r.shares) || r.shares.length>count || r.shares.length===0 || !r.shares.every(yen) || sum(r.shares)!==(r.mode===modes[0]?0:r.total)) return false;
@@ -97,8 +98,12 @@ export function legacyTrip(data) {
 export function validTrip(t) {
   return t && nameOK(t.id) && nameOK(t.title) && [t.start,t.end].every(d=>d==='' || isoDate(d)) &&
     (!t.start || !t.end || t.start<=t.end) && typeof t.split==='boolean' && typeof t.archived==='boolean' &&
+    [t.budget,t.opening].every(v=>v==null||yen(v)) && (t.cashRate==null||rateOK(t.cashRate)) &&
+    (t.memberIds===undefined||(Array.isArray(t.memberIds)&&t.memberIds.length===t.names.length&&t.memberIds.every(nameOK)&&unique(t.memberIds))) &&
+    (t.movements===undefined||(Array.isArray(t.movements)&&t.movements.every(m=>m&&nameOK(m.id)&&isoDate(m.date)&&yen(Math.abs(m.amount))&&nameOK(m.kind)))) &&
+    (t.checks===undefined||(Array.isArray(t.checks)&&t.checks.every(c=>c&&isoDate(c.date)&&yen(c.amount)&&yen(c.diff)))) &&
     Array.isArray(t.names) && t.names.every(nameOK) && Array.isArray(t.retired) && t.names.length===t.retired.length &&
-    t.retired.every(n=>typeof n==='boolean') && (!t.split || t.retired.filter(v=>!v).length>=2);
+    t.retired.every(n=>typeof n==='boolean') && (!t.split || t.retired.filter(v=>!v).length>=1);
 }
 export function validBook(book) {
   return book && Array.isArray(book.trips) && book.trips.every(validTrip) && unique(book.trips.map(t=>t.id)) &&

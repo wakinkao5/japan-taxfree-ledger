@@ -1,5 +1,6 @@
-import {openDB,readBook,scopeBook,writeBook} from './storage.js?v=2.0';
-import {categories,methods,statuses,modes,initial,yen,rateOK,sum,even,refundShares,settlement,validRecord,validState,validBook,validTrip,legacyTrip,threshold,feeAmount} from './model.js?v=2.0';
+import {summary} from "./budget.js?v=2.1";
+import {priorBackup,updateCash,openDB,readBook,scopeBook,writeBook} from './storage.js?v=2.1';
+import {categories,methods,statuses,modes,initial,yen,rateOK,sum,even,refundShares,settlement,validRecord,validState,validBook,validTrip,legacyTrip,threshold,feeAmount} from './model.js?v=2.1';
 
 const $ = (s, root=document) => root.querySelector(s);
 const app = $('#app');
@@ -59,12 +60,12 @@ function go(next, id=null) {
 function render() {
   if(!state.trip && page!=='settings')page='trips';
   $('#trip-title').textContent=state.trip?.title??'我的旅程';
-  $('[data-page=split]').hidden=!state.trip?.split;
+
   document.querySelectorAll('[data-page]').forEach(b=>{
     if(b.dataset.page===page)b.setAttribute('aria-current','page');
     else b.removeAttribute('aria-current');
   });
-  const views={trips:tripsView,entry:entryView,list:listView,refund:refundView,split:splitView,settings:settingsView};
+  const views={trips:tripsView,entry:entryView,list:listView,refund:refundView,split:splitView,budget:budgetView,settings:settingsView};
   views[page]();
 }
 function rateText(rate=state.rate) {
@@ -81,29 +82,31 @@ function tripsView() {
     <div class="actions">${button(archived?'查閱':'進入','switch:'+esc(t.id))}${button('編輯','trip-edit:'+esc(t.id))}
     ${button(archived?'解除封存':'封存','archive:'+esc(t.id))}</div></article>`).join('');
   app.innerHTML=`<div class="row"><h1>我的旅程</h1>${button('＋ 新增旅程','trip-new','primary')}</div>
+    ${state.trip?.split?button('同行分攤與結算','view-split'):''}
     ${group(false)||empty('建立一個旅程，開始記下旅途中的花費。')}
     ${state.trips.some(t=>t.archived)?'<h2>已封存旅程</h2>'+group(true):''}`;
 }
 function tripEditor(id) {
   const t=state.trips.find(t=>t.id===id);
-  let members=t?t.names.map((name,i)=>({name,retired:t.retired[i]})):[];
+  let members=t?t.names.map((name,i)=>({name,retired:t.retired[i],id:t.memberIds?.[i]})):[];
   const active=()=>members.filter(m=>!m.retired).length;
   app.innerHTML=`<h1>${t?'編輯':'新增'}旅程</h1><form id="trip-form" class="card grid">
     ${label('旅程專案名稱',input('title',t?.title,'required maxlength="100" placeholder="例如：2026 關西旅誌"'),'full')}
     ${label('出發日期',input('start',t?.start,'type="date"'))}${label('回國日期',input('end',t?.end,'type="date"'))}
+    <details class="full"><summary>預算與換匯（選填）</summary><div class="grid">${label('旅程總預算（日圓）',input('budget',t?.budget,number))}${label('初始日圓現金',input('opening',t?.opening,number))}${label('實際換匯匯率',input('cashRate',t?.cashRate,rateInput))}</div></details>
     <div class="full divider">${check('split','啟用同行分攤',t?.split)}</div>
-    <div class="full" id="travel-party">${label('同行人數（含自己）',input('count',active()||2,'type="number" min="2" step="1" inputmode="numeric"'))}
-    <div id="party-fields" class="grid"></div>${button('＋ 新增旅伴','add-person')}</div>
+    <div class="full" id="travel-party">${label('同行人數（含自己）',input('count',active()||2,'type="number" min="1" step="1" inputmode="numeric"'))}
+    <div id="party-fields" class="grid"></div>${button('＋ 新增成員','add-person')}</div>
     ${errorBox}<div class="full actions"><button class="primary" type="submit">儲存旅程</button>${button('取消','trip-cancel')}</div></form>`;
   const f=$('#trip-form'), count=field(f,'count');
-  const add=()=>members.push({name:'旅伴 '+(members.length+1),retired:false});
+  const add=()=>members.push({name:'旅伴 '+(members.length+1),retired:false,id:crypto.randomUUID()});
   function draw() {
     count.value=active();
     $('#party-fields').innerHTML=members.map((m,i)=>m.retired?'':`<div class="person-row">${label('旅伴 '+(i+1),input('person'+i,m.name,'required maxlength="100"'))}<button type="button" data-retire="${i}" aria-label="移除旅伴 ${i+1}">−</button></div>`).join('');
   }
   function toggle(){
     const on=marked(f,'split');
-    if(on){while(active()<2)add();draw();}
+    if(on){if(!active())add();draw();}
     $('#travel-party').hidden=!on;
     $('#travel-party').querySelectorAll('input').forEach(e=>e.disabled=!on);
   }
@@ -114,7 +117,7 @@ function tripEditor(id) {
   field(f,'split').onchange=toggle;
   count.onchange=()=>{
     const n=count.valueAsNumber;
-    if(!Number.isSafeInteger(n)||n<2)return;
+    if(!Number.isSafeInteger(n)||n<1)return;
     while(active()<n)add();
     while(active()>n)members.findLast(m=>!m.retired).retired=true;
     draw();
@@ -122,7 +125,7 @@ function tripEditor(id) {
   f.onclick=e=>{
     if(e.target.dataset.action==='add-person'){add();draw();}
     if(e.target.dataset.retire!==undefined){
-      if(active()<=2){setError(f,'同行分攤需要至少兩人。');return;}
+      if(active()<=1){setError(f,'請保留一位旅伴，或關閉同行分攤。');return;}
       members[Number(e.target.dataset.retire)].retired=true;draw();
     }
   };
@@ -131,7 +134,7 @@ function tripEditor(id) {
     if(pending)return;
     const split=marked(f,'split');
     if(!t && !split)members=[];
-    const trip={id:t?.id??crypto.randomUUID(),title:value(f,'title'),start:value(f,'start'),end:value(f,'end'),
+    const trip={...t,memberIds:members.map(m=>m.id??crypto.randomUUID()),budget:num(f,'budget'),opening:num(f,'opening'),cashRate:num(f,'cashRate'),id:t?.id??crypto.randomUUID(),title:value(f,'title'),start:value(f,'start'),end:value(f,'end'),
       split,archived:t?.archived??false,names:members.map(m=>m.name.trim()),retired:members.map(m=>m.retired)};
     if(!validTrip(trip)){setError(f,'請檢查名稱、人數，以及回國日期是否早於出發日期。');return;}
     pending=true;
@@ -162,7 +165,7 @@ async function refreshRate(force=false) {
   if ($('#fx-status')) $('#fx-status').innerHTML=currentRateText();
   const form=$('#entry-form');
   if (form && !editing && !field(form,'rate').dataset.changed && state.rate) {
-    field(form,'rate').value=state.rate.value;
+    field(form,'rate').value=(value(form,'payment')==='現金'?state.trip.cashRate:null)??state.rate.value;
     previewEntry(form);
   }
 }
@@ -175,9 +178,9 @@ function entryView() {
         ${label('付款方式',select('payment',methods,r?.payment))}
         ${label('店家',input('store',r?.store,'list="shop-list" required maxlength="100" placeholder="選擇或輸入店家"')+`<datalist id="shop-list">${state.stores.map(s=>option(s.name)).join('')}</datalist>`)}
         ${label('分類',select('category',categories,r?.category??'其他'))}
-        ${label('分店（選填）',input('branch',r?.branch,'maxlength="100" placeholder="例：道頓堀店"'))}
+        <details class="full"><summary>分店、餐飲及備註</summary><div class="grid">${label('分店（選填）',input('branch',r?.branch,'maxlength="100" placeholder="例：道頓堀店"'))}
         ${check('food','餐飲／在日消費',r?.food)}
-        ${label('備註',input('note',r?.note,'maxlength="500"'), 'full')}
+        ${label('備註',input('note',r?.note,'maxlength="500"'), 'full')}</div></details>
       </section>
       <section class="card grid">
         <h2 class="full">支出金額</h2>
@@ -185,13 +188,14 @@ function entryView() {
         ${label('未稅金額（日圓）',input('net',r?.net,number))}
         ${label('收據稅金（日圓）',input('tax',r?.tax,number))}
         ${label('含稅總額（日圓）',input('total',r?.total,number))}
-        ${label('日圓 → 台幣匯率',input('rate',r?.rate.value??state.rate?.value,rateInput+' required'))}
+        ${label('日圓 → 台幣匯率',input('rate',r?.rate.value??state.trip.cashRate??state.rate?.value,rateInput+' required'))}
         <div class="full muted" id="fx-status">${currentRateText()}</div>
         <div class="full actions">${button('更新匯率','update-rate')}<a class="muted" href="https://www.exchangerate-api.com" target="_blank" rel="noopener">Rates By Exchange Rate API</a></div>
       </section>
-      <div class="hero" aria-live="polite"><div><small>含稅支出</small><strong id="yen-preview">¥0</strong></div><div class="right"><small>約合台幣</small><strong id="nt-preview">—</strong></div></div>
+      <div class="hero" aria-live="polite"><div><small>含稅支出</small><strong id="yen-preview">¥0</strong></div><div class="right"><small id="conversion-label"></small><strong id="nt-preview">—</strong></div></div>
+      <p id="card-notice" class="muted">實際台幣金額依信用卡結匯匯率、入帳日期及海外交易手續費為準。</p><details class="card" id="card-post"><summary>信用卡入帳核對（選填）</summary><div class="grid">${label('實際入帳台幣',input('posted',r?.posted,number))}${label('入帳日期',input('postedDate',r?.postedDate,'type="date"'))}</div><output id="post-diff"></output></details>
       <p id="tax-hint" class="muted"></p>
-      ${state.trip.split ? `<section class="card grid">
+      ${(r?.mode || state.trip.split && state.trip.retired.filter(x=>!x).length>1) ? `<section class="card grid">
         <h2 class="full">同行分攤</h2>
         ${label('誰付款',people('payer',r?.payer??state.trip.retired.indexOf(false)))}
         ${label('分攤方式',select('mode',[modes[0],modes[3],modes[1],modes[2]],r?.mode))}
@@ -219,6 +223,7 @@ function entryView() {
   previewEntry(form);
   form.addEventListener('input',event=>{
     const name=event.target.name;
+    if(name==='payment'){field(form,'rate').value=(r?.payment===value(form,'payment')?r.rate.value:null)??(value(form,'payment')==='現金'?state.trip.cashRate:null)??state.rate?.value??'';delete field(form,'rate').dataset.changed;}
     if(name==='mode')form.originalMembers=null;
     if (name==='rate') field(form,'rate').dataset.changed='yes';
     if (name==='store') {
@@ -268,11 +273,15 @@ function previewEntry(f) {
   field(f,'tax').closest('label').hidden=a.input==='auto';
   field(f,'tax').required=a.input==='tax';
   for (const name of ['net','tax','total']) field(f,name).disabled=field(f,name).closest('label').hidden;
+  const card=value(f,'payment')==='信用卡';
+  $('#card-post').hidden=!card;$('#card-notice').hidden=!card;
+  $('#conversion-label').textContent=!card && rate===state.trip.cashRate?'依換匯折合台幣':'預估台幣金額';
+  $('#post-diff').textContent=card&&num(f,'posted')!==null&&rate?'與預估差額 '+nt(num(f,'posted')-Math.round(a.total*rate)):'';
   $('#yen-preview').textContent=money(a.total);
   $('#nt-preview').textContent=rateOK(rate)?nt(a.total*rate):'—';
   $('#tax-hint').textContent=`未稅 ${money(a.net)} · 稅金 ${money(a.tax)}`+
     (a.input==='auto'?' · 按 10% 估算；混合 8%／10% 的藥妝請依收據修正。':a.input==='total'&&num(f,'tax')===null?' · 稅金由含稅額按 10% 反推估算，可填收據稅金。':'');
-  if(!state.trip.split)return;
+  if(!field(f,'mode'))return;
   $('#participants').hidden=mode!==modes[1];
   $('#custom-shares').hidden=mode!==modes[2];
   $('#custom-shares').querySelectorAll('input').forEach(e=>e.disabled=mode!==modes[2]);
@@ -306,15 +315,15 @@ async function saveEntry(f,old) {
     const a=amounts(f), mode=field(f,'mode')?.value, food=marked(f,'food'), store=value(f,'store');
     const profile=state.stores.find(p=>p.name===store);
     const val=num(f,'rate');
-    const rate=old?.rate.value===val?old.rate:state.rate?.value===val && !field(f,'rate').dataset.changed?state.rate:{value:val,time:new Date().toISOString(),source:'手動'};
+    const rate=old?.rate.value===val && old.payment===value(f,'payment')?old.rate:value(f,'payment')==='現金' && val===state.trip.cashRate?{value:val,time:new Date().toISOString(),source:'實際換匯'}:state.rate?.value===val && !field(f,'rate').dataset.changed?state.rate:{value:val,time:new Date().toISOString(),source:'手動'};
     const r={
-      ...a,tripId:state.trip.id,id:old?.id??crypto.randomUUID(),date:value(f,'date'),store,branch:value(f,'branch'),note:value(f,'note'),
-      category:value(f,'category'),payment:value(f,'payment'),food,rate,photo:f.photo,
-      ...(state.trip.split?{mode,payer:num(f,'payer'),shares:sharesFor(f,a.total),members:selectedMembers(f,mode)}:{}),
+      ...old,...a,posted:value(f,'payment')==='信用卡'?num(f,'posted'):null,postedDate:value(f,'payment')==='信用卡'?value(f,'postedDate'):'',tripId:state.trip.id,id:old?.id??crypto.randomUUID(),date:value(f,'date'),store,branch:value(f,'branch'),note:value(f,'note'),
+      referenceRate:old?.referenceRate??old?.rate??state.rate??rate,category:value(f,'category'),payment:value(f,'payment'),food,rate,photo:f.photo,
+      ...(mode?{mode,payer:num(f,'payer'),shares:sharesFor(f,a.total),members:selectedMembers(f,mode)}:{}),
       status:food?statuses[3]:old?.food?statuses[0]:old?.status??statuses[0],
       method:old?.method??profile?.method??'',agency:old?.agency??profile?.agency??'',
       fee:old?old.fee:profile?.fee??null,basis:old?.basis??profile?.basis??'tax',
-      actual:food?null:old?.actual??null,...(state.trip.split?{include:!food && mode!==modes[0] && Boolean(old?.include),receiver:old?.receiver??num(f,'payer')}:{})
+      actual:food?null:old?.actual??null,...(mode?{include:!food && mode!==modes[0] && Boolean(old?.include),receiver:old?.receiver??num(f,'payer')}:{})
     };
     if(!validRecord(r,state.names.length)) {
       setError(f,'請檢查店名、金額、匯率及分攤合計。已入帳退稅也須小於或等於本筆稅金。');
@@ -337,9 +346,9 @@ function listView() {
     const records=order(state.records).filter(r=>[r.store,r.date,r.category,r.branch,r.note,r.payment].join(' ').toLowerCase().includes(query));
     $('#records').innerHTML=records.length?records.map(r=>`<article class="card">
       <div class="row"><div><h3>${esc(r.store)} ${esc(r.branch)}</h3><p class="muted">${r.date} · ${r.category} · ${r.payment}${r.food?' · 餐飲':''}</p></div>
-      <div class="right"><div class="amount">${money(r.total)}</div><small>${nt(r.total*r.rate.value)}</small></div></div>
+      <div class="right"><div class="amount">${money(r.total)}</div><small>${r.rate.source==='實際換匯'?'折合':'預估'} ${nt(r.total*r.rate.value)}</small></div></div>
       <p class="muted">${r.mode?esc(state.names[r.payer])+'付款 · '+r.mode:'個人支出'}${r.note?' · '+esc(r.note):''}</p>
-      <details><summary>查看金額與收據</summary><p class="muted">未稅 ${money(r.net)} · 稅金 ${money(r.tax)} · ${esc(rateText(r.rate))}</p>${r.photo?`<img class="receipt" loading="lazy" alt="收據照片" src="${r.photo}">`:''}</details>
+      <details><summary>查看金額與收據</summary>${r.posted!=null?'<p>實際入帳 '+nt(r.posted)+' · 與預估差額 '+nt(r.posted-Math.round(r.total*r.rate.value))+' '+esc(r.postedDate)+'</p>':''}<p class="muted">未稅 ${money(r.net)} · 稅金 ${money(r.tax)} · ${esc(rateText(r.rate))}</p>${r.photo?`<img class="receipt" loading="lazy" alt="收據照片" src="${r.photo}">`:''}</details>
       <div class="actions divider">${button('修改','edit:'+esc(r.id))}${button('退稅','refund:'+esc(r.id))}${button('刪除','delete:'+esc(r.id),'danger')}</div>
     </article>`).join(''):empty(query?'找不到符合條件的紀錄。':'帳本目前沒有支出。');
   }
@@ -385,6 +394,7 @@ function refundForm(r) {
       ${label('手續費（%）',input('fee',r.fee,percent+' placeholder="留空＝待確認"'))}
       ${label('手續費基準',basisSelect(r.basis))}
       <div id="received" class="grid full">
+        ${label('退稅入帳日',input('receivedDate',r.receivedDate??dateNow(),'type="date"'))}
         ${label('實際入帳（日圓）',input('actual',r.actual,number))}
         ${r.mode && state.trip.split?label('誰收到退款',people('receiver',r.receiver)):''}
         ${state.trip.split && r.mode && r.mode!==modes[0]?check('include','納入原分攤',r.include):''}
@@ -428,7 +438,7 @@ function refundForm(r) {
     try {
       const status=value(f,'status'), paid=status===statuses[2];
       const updated={...r,status,method:value(f,'method'),agency:value(f,'agency'),fee:num(f,'fee'),basis:value(f,'basis'),
-        actual:paid?num(f,'actual'):null,...(r.mode?{receiver:field(f,'receiver')?num(f,'receiver'):r.receiver,include:paid && (field(f,'include')?marked(f,'include'):r.include)}:{})};
+        receivedDate:paid?(value(f,'receivedDate')||dateNow()):null,actual:paid?num(f,'actual'):null,...(r.mode?{receiver:field(f,'receiver')?num(f,'receiver'):r.receiver,include:paid && (field(f,'include')?marked(f,'include'):r.include)}:{})};
       if(!validRecord(updated,state.names.length)) {setError(f,'實際入帳須為日圓整數，並在 0 至本筆稅金之間。');return;}
       await commit(state,{record:updated});go('refund');toast('已儲存退稅');
     } catch {setError(f,'儲存失敗，請重試。');}
@@ -463,7 +473,7 @@ function settingsView() {
       <div id="profile-editor"></div>
     </section>
     <section class="card"><h2>帳本備份與還原</h2><p class="muted">備份包含支出、收據照片、旅伴、分攤及設定。換裝置或更換網站網址前，可先匯出備份。</p>
-      <div class="actions">${button('匯出 JSON 備份','export','primary')}</div>
+      <div class="actions">${button('匯出 JSON 備份','export','primary')}${button('匯出升級前備份','prior')}</div>
       <div class="divider">${label('選取備份檔以檢查還原內容','<input id="import" type="file" accept=".json,application/json">')}<div id="import-result" role="status"></div></div>
     </section>
     <section class="card"><h2>加入 iPhone 主畫面</h2><p>在 Safari 開啟本頁，點「分享」→「加入主畫面」。有網路時先開啟一次，等頁面完成載入再離線使用。</p><small id="offline-ready">正在確認離線功能…</small></section>`;
@@ -505,9 +515,11 @@ function profileEditor(group,index) {
   };
   f.scrollIntoView({block:'nearest'});
 }
-async function exportBackup() {
+async function exportBackup(prior=false) {
   const fresh=await readBook(database);
-  const blob=new Blob([JSON.stringify({format:'japan-taxfree-ledger',version:2,data:fresh})],{type:'application/json'});
+  const data=prior?await priorBackup(database):{format:'japan-taxfree-ledger',version:2,data:fresh};
+  if(!data){toast('此裝置沒有升級前的帳本');return;}
+  const blob=new Blob([JSON.stringify(data)],{type:'application/json'});
   const link=document.createElement('a');
   link.href=URL.createObjectURL(blob);
   link.download='japan-taxfree-ledger-'+dateNow()+'.json';
@@ -531,7 +543,7 @@ async function previewImport(file) {
     if(!validBook(s))throw Error();
     if(importAttempt!==attempt||!result.isConnected)return;
     const existing=await readBook(database);
-    result.innerHTML=`<p class="muted">還原會用備份中的 ${s.records.length} 筆支出與 ${s.records.filter(r=>r.photo).length} 張照片，取代目前全部 ${existing.trips.length} 個旅程及 ${existing.records.length} 筆支出，還原 ${s.trips.length} 個旅程。旅伴、分攤、匯率及店家設定也會一併取代。</p><button type="button" class="danger">確認取代並還原</button>`;
+    result.innerHTML=`<p class="muted">還原會用備份中的 ${s.records.length} 筆支出與 ${s.records.filter(r=>r.photo).length} 張照片，取代目前全部 ${existing.trips.length} 個旅程及 ${existing.records.length} 筆支出，還原 ${s.trips.length} 個旅程。旅伴、分攤、預算、現金異動、每日清點、匯率及店家設定也會一併取代。</p><button type="button" class="danger">確認取代並還原</button>`;
     $('button',result).onclick=async e=>{
       if(pending)return;
       if(!confirm('確定以這份備份取代現有帳本與設定？'))return;
@@ -556,6 +568,8 @@ async function action(raw) {
   if(state.trip?.archived && ['new','edit','delete','refund'].includes(name)){toast('請先解除封存再修改。');return;}
   if(name==='edit' && record?.mode && !state.trip.split){toast('這筆含歷史同行資料，請先在旅程設定開啟分攤。');return;}
   switch(name) {
+    case 'prior':await exportBackup(true);break;
+    case 'view-split':go('split');break;
     case 'trip-new':page='trips';tripEditor();break;
     case 'trip-edit':page='trips';tripEditor(id);break;
     case 'trip-cancel':go('trips');break;
@@ -616,3 +630,53 @@ try {
   app.removeAttribute('aria-busy');
   app.innerHTML='<h1>帳本無法開啟</h1><p>'+esc(error.message.includes('舊版')?error.message:'請確認瀏覽器允許本機儲存，再重新開啟網站。')+'</p>';
 }
+
+function budgetView(){
+  const t=state.trip, totals=summary(t,state.records);
+  const rate=t.cashRate??state.rate?.value;
+  const display=n=>money(n)+(rate?' <small>約 '+nt(n*rate)+'</small>':'');
+  const line=(name,n)=>`<div class="budget-line"><span>${name}</span><strong>${display(n)}</strong></div>`;
+  const kinds=['額外換匯','ATM 提款','現金退款','現金補充','現金調整增加','現金調整減少','其他現金移出'];
+  const ratio=t.budget?Math.round(totals.spent/t.budget*100):null;
+  app.innerHTML=`<h1>旅程預算</h1><h2>${esc(t.title)}</h2>
+    <section class="card"><div class="row"><h2>累計消費</h2><strong class="amount">${display(totals.spent)}</strong></div>
+    ${t.budget!=null?line('旅程總預算',t.budget)+line(totals.spent>t.budget?'預算超支':'剩餘預算',Math.abs(t.budget-totals.spent)):'<p>尚未設定總預算</p>'}
+    ${ratio==null?'':`<progress max="100" value="${Math.min(100,ratio)}"></progress> 已使用 ${ratio}%`}
+    ${line('現金支出',totals.cash)}${line('信用卡支出',totals.card)}${line('其中雜項支出',totals.misc)}
+    ${line('手上剩餘現金',totals.wallet)}${line('預估可退稅（已知費率）',totals.estimate)}${line('已收到退稅',totals.received)}
+    ${button('編輯預算與初始現金','trip-edit:'+esc(t.id))}</section>
+    ${t.archived?'':`<form class="card grid" id="count-form"><h2 class="full">每日現金核對</h2>
+    ${label('核對日期',input('date',dateNow(),'type="date" required'))}${label('實際清點日圓',input('count','',number+' required'))}
+    ${!rate?label('日圓換台幣匯率（補記差額時使用）',input('countRate','',rateInput)):''}
+    <output id="count-result" class="full"></output><button class="primary full" type="submit">確認核對</button></form>
+    <details class="card" id="movement"><summary>新增現金異動</summary><form class="grid" id="flow-form">
+    ${label('異動項目',select('kind',kinds))}${label('日期',input('date',dateNow(),'type="date" required'))}${label('日圓金額',input('amount','',number+' required'))}
+    <button type="submit">儲存異動</button></form></details>`}
+    <details class="card"><summary>現金異動與清點紀錄</summary>${state.records.some(r=>r.status==='已退稅'&&r.method==='現金'&&!r.receivedDate)?'<p>舊版現金退稅尚無入帳日，暫按消費日計入；可在退稅明細補登。</p>':''}${(t.movements??[]).slice().reverse().map(m=>`<p>${esc(m.date)} · ${esc(m.kind)}　${money(m.amount)}</p>`).join('')}${(t.checks??[]).slice().reverse().map(c=>`<p>${esc(c.date)} · 清點 ${money(c.amount)} · 補記 ${money(c.diff)}</p>`).join('')}</details>`;
+  if(t.archived)return;
+  const f=$('#count-form'), flow=$('#flow-form');
+  function preview(){
+    const counted=num(f,'count'),day=value(f,'date'),wallet=summary(t,state.records,day).wallet;
+    const diff=wallet-counted;
+    $('#count-result').textContent='帳面 '+money(wallet)+(counted===null?'':diff>0?' · 今日有 '+money(diff)+' 未記錄現金支出，是否列入雜項支出？':diff<0?' · 多出 '+money(-diff)+'，請確認退款、補充現金或記帳錯誤。':' · 清點相符');
+    f.querySelector('button').disabled=counted===null||diff<0;
+    if(counted!==null&&diff<0){$('#movement').open=true;field(flow,'date').value=day;field(flow,'kind').value='現金調整增加';field(flow,'amount').value=-diff;}
+  }
+  f.oninput=preview;preview();
+  async function submit(e){
+    e.preventDefault();if(pending)return;pending=true;
+    try{
+      const count=e.target===f,form=e.target,amount=num(form,count?'count':'amount');
+      if(!count&&!amount){toast('請輸入正整數');return;}
+      await updateCash(database,t.id,value(form,'date'),amount,count?'清點':value(form,'kind'),t.cashRate?{value:t.cashRate,time:new Date().toISOString(),source:'實際換匯'}:state.rate??(field(form,'countRate')&&num(form,'countRate')?{value:num(form,'countRate'),time:new Date().toISOString(),source:'手動'}:null));
+      state=await readState();budgetView();toast('已儲存');
+    }catch{toast('未能儲存，請確認匯率與旅程狀態。');}finally{pending=false;}
+  }
+  f.onsubmit=flow.onsubmit=submit;
+}
+function fitKeyboard(){
+  const viewport=window.visualViewport;
+  if(viewport)document.documentElement.style.setProperty('--keyboard',Math.max(0,window.innerHeight-viewport.height-viewport.offsetTop)+'px');
+}
+window.visualViewport?.addEventListener('resize',fitKeyboard);
+window.visualViewport?.addEventListener('scroll',fitKeyboard);
