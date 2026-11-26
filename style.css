@@ -178,3 +178,8 @@ nav [aria-current=page] {
 @media (display-mode: standalone) {
   .brand { min-height: 60px; }
 }
+
+.trip-group { margin-block: 18px 6px; }
+.trip-group + .trip-item { margin-top: 0; }
+fieldset.card { min-inline-size: 0; }
+.recovery-code { font: 700 1.1rem ui-monospace, monospace; user-select: all; }

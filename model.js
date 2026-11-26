@@ -97,7 +97,7 @@ export function legacyTrip(data) {
 }
 export function validTrip(t) {
   return t && nameOK(t.id) && nameOK(t.title) && [t.start,t.end].every(d=>d==='' || isoDate(d)) &&
-    (!t.start || !t.end || t.start<=t.end) && typeof t.split==='boolean' && typeof t.archived==='boolean' &&
+    (t.lock===undefined || validTripLock(t.lock)) && typeof t.split==='boolean' && typeof t.archived==='boolean' &&
     [t.budget,t.opening].every(v=>v==null||yen(v)) && (t.cashRate==null||rateOK(t.cashRate)) &&
     (t.memberIds===undefined||(Array.isArray(t.memberIds)&&t.memberIds.length===t.names.length&&t.memberIds.every(nameOK)&&unique(t.memberIds))) &&
     (t.movements===undefined||(Array.isArray(t.movements)&&t.movements.every(m=>m&&nameOK(m.id)&&isoDate(m.date)&&yen(Math.abs(m.amount))&&nameOK(m.kind)))) &&
@@ -121,4 +121,12 @@ export function threshold(record, records) {
 }
 export function feeAmount(r, fee=r.fee, basis=r.basis) {
   return fee===null ? null : Math.round((basis==='tax'?r.tax:r.total)*fee/100);
+}
+
+export function travelerCount(trip) {
+  return trip?.split ? Math.max(1,trip.retired.filter(retired=>!retired).length) : 1;
+}
+
+export function validTripLock(lock) {
+  return Boolean(lock && [lock.pin,lock.recovery].every(digest=>typeof digest==='string' && /^[a-f0-9]{64}$/.test(digest)));
 }

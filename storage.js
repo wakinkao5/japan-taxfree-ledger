@@ -1,9 +1,9 @@
-import {summary} from './budget.js?v=2.1';
-import {initial,legacyTrip} from './model.js?v=2.1';
+import {summary} from './budget.js?v=2.2';
+import {initial,legacyTrip,validTripLock} from './model.js?v=2.2';
 
 export function openDB() {
   return new Promise((resolve,reject)=>{
-    const req=indexedDB.open('japan-taxfree-ledger-v1',3);
+    const req=indexedDB.open('japan-taxfree-ledger-v1',4);
     req.onblocked=()=>reject(Error('請關閉其他開著舊版帳本的分頁，再重新整理。'));
     req.onerror=()=>reject(req.error);
     req.onupgradeneeded=event=>{
@@ -12,7 +12,7 @@ export function openDB() {
       const settings=event.oldVersion ? tx.objectStore('settings') : db.createObjectStore('settings');
       const trips=event.oldVersion>=2?tx.objectStore('trips'):db.createObjectStore('trips',{keyPath:'id'});
       if(event.oldVersion<2)records.createIndex('tripId','tripId');
-      if (!event.oldVersion) return;
+      if (!event.oldVersion || event.oldVersion>=3) return;
       const prior=trips.getAll(),active=settings.get('active'),cfg=settings.get('config'), list=records.getAll();
       list.onsuccess=()=>{
         const data={...initial(),...cfg.result,records:list.result};
@@ -67,7 +67,11 @@ export function writeBook(db,updated,change) {
     }
     if(change.trip){
       const req=trips.get(change.trip.id);
-      req.onsuccess=()=>trips.put(withIds({...change.trip,movements:req.result?.movements??[],checks:req.result?.checks??[]}));
+      req.onsuccess=()=>{
+        const old=req.result;
+        if(old?.archived || change.trip.archived){tx.abort();return;}
+        trips.put(withIds({...change.trip,lock:old?.lock,movements:old?.movements??[],checks:old?.checks??[]}));
+      };
     }
     if(change.active)settings.put(change.active,'active');
     if(change.record || change.remove){
@@ -114,6 +118,21 @@ export function updateCash(db,id,date,amount,kind,rate){
         const sign=['現金調整減少','其他現金移出'].includes(kind)?-1:1;
         trips.put({...trip,movements:[...(trip.movements??[]),{id:crypto.randomUUID(),date,amount:sign*amount,kind}]});
       }
+    };
+  });
+}
+
+export function transitionTrip(db,id,action,proof,newLock){
+  return access(db,'readwrite',({trips},tx)=>{
+    const current=trips.get(id);
+    current.onsuccess=()=>{
+      const trip=current.result;
+      const closing=action==='close';
+      if(!trip || trip.archived===closing){tx.abort();return;}
+      const expected=action==='recover'?'recovery':'pin';
+      if(trip.lock && !closing && proof!==trip.lock[expected]){tx.abort();return;}
+      if((!trip.lock || action==='recover') && !validTripLock(newLock)){tx.abort();return;}
+      trips.put({...trip,archived:closing,lock:newLock??trip.lock});
     };
   });
 }
