@@ -183,3 +183,28 @@ nav [aria-current=page] {
 .trip-group + .trip-item { margin-top: 0; }
 fieldset.card { min-inline-size: 0; }
 .recovery-code { font: 700 1.1rem ui-monospace, monospace; user-select: all; }
+
+#trip-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-block: 10px 0;
+}
+#trip-navigation button { flex: 0 1 auto; padding-inline: 10px; }
+#trip-navigation + main { padding-top: 12px; }
+.budget-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: clamp(12px, 3.5vw, 15px);
+  font-variant-numeric: tabular-nums;
+}
+.budget-table th, .budget-table td {
+  padding: 8px 3px;
+  border-bottom: 1px solid var(--line);
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+.budget-table th:first-child { text-align: start; }
+.budget-table .over { color: #a42f32; }
+.budget-table .under { color: #205889; }
+.budget-table .equal { color: #161616; }

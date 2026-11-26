@@ -1,9 +1,9 @@
-import {summary} from './budget.js?v=2.2';
-import {initial,legacyTrip,validTripLock} from './model.js?v=2.2';
+import {summary} from './budget.js?v=2.3';
+import {initial,legacyTrip,validTripLock} from './model.js?v=2.3';
 
 export function openDB() {
   return new Promise((resolve,reject)=>{
-    const req=indexedDB.open('japan-taxfree-ledger-v1',4);
+    const req=indexedDB.open('japan-taxfree-ledger-v1',5);
     req.onblocked=()=>reject(Error('請關閉其他開著舊版帳本的分頁，再重新整理。'));
     req.onerror=()=>reject(req.error);
     req.onupgradeneeded=event=>{
@@ -70,7 +70,19 @@ export function writeBook(db,updated,change) {
       req.onsuccess=()=>{
         const old=req.result;
         if(old?.archived || change.trip.archived){tx.abort();return;}
-        trips.put(withIds({...change.trip,lock:old?.lock,movements:old?.movements??[],checks:old?.checks??[]}));
+        trips.put(withIds({...change.trip,lock:old?.lock,categoryBudgets:old?.categoryBudgets,movements:old?.movements??[],checks:old?.checks??[]}));
+      };
+    }
+    if(change.categoryBudget){
+      const {tripId,category,amount}=change.categoryBudget;
+      const req=trips.get(tripId);
+      req.onsuccess=()=>{
+        const trip=req.result;
+        if(!trip || trip.archived){tx.abort();return;}
+        const categoryBudgets={...trip.categoryBudgets};
+        if(amount===null)delete categoryBudgets[category];
+        else categoryBudgets[category]=amount;
+        trips.put({...trip,categoryBudgets});
       };
     }
     if(change.active)settings.put(change.active,'active');
@@ -110,7 +122,7 @@ export function updateCash(db,id,date,amount,kind,rate){
         const diff=summary(trip,rows.result,date).wallet-amount;
         const checks=trip.checks??[];
         if(diff<0||checks.some(c=>c.date===date&&c.amount===amount&&c.diff===diff))return;
-        if(diff>0 && !rate){tx.abort();return;}
+
         const recordId=crypto.randomUUID();
         if(diff>0)records.add({id:recordId,tripId:id,date,store:'雜項支出',note:'每日現金核對差額',branch:'',category:'其他',payment:'現金',food:false,input:'total',total:diff,net:diff,tax:0,photo:null,rate,status:'不適用',method:'',agency:'',fee:null,basis:'tax',actual:null,reconciliation:true},recordId);
         trips.put({...trip,checks:[...checks,{date,amount,diff,recordId:diff?recordId:null}]});

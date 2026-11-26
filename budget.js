@@ -1,4 +1,4 @@
-import {feeAmount,threshold} from './model.js?v=2.2';
+import {feeAmount,threshold} from './model.js?v=2.3';
 
 export function summary(trip,records,date='9999-12-31'){
   let cash=0,card=0,misc=0,received=0,cashRefund=0,estimate=0,flows=0;

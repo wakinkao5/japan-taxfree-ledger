@@ -1,6 +1,6 @@
-import {summary} from "./budget.js?v=2.2";
-import {priorBackup,updateCash,openDB,readBook,scopeBook,writeBook,transitionTrip} from './storage.js?v=2.2';
-import {categories,methods,statuses,modes,initial,yen,rateOK,sum,even,refundShares,settlement,validRecord,validState,validBook,validTrip,travelerCount,legacyTrip,threshold,feeAmount} from './model.js?v=2.2';
+import {summary} from "./budget.js?v=2.3";
+import {priorBackup,updateCash,openDB,readBook,scopeBook,writeBook,transitionTrip} from './storage.js?v=2.3';
+import {categories,methods,statuses,modes,initial,yen,rateOK,sum,even,refundShares,settlement,settlementParts,categoryOf,refundRequested,currencies,conversion,roundShare,validRecord,validState,validBook,validTrip,travelerCount,legacyTrip,threshold,feeAmount} from './model.js?v=2.3';
 
 const $ = (s, root=document) => root.querySelector(s);
 const app = $('#app');
@@ -24,13 +24,14 @@ const localTime = s => new Date(s).toLocaleString('zh-TW',{hour12:false});
 const field = (form,name) => form.elements.namedItem(name);
 const value = (form,name) => field(form,name).value.trim();
 const num = (form,name) => value(form,name)==='' ? null : Number(value(form,name));
+const numIfPresent = (form,name) => field(form,name)?num(form,name):null;
 const marked = (form,name) => Boolean(field(form,name)?.checked);
 const people = (name,index) => `<select name="${name}">${state.names.map((n,i)=>state.trip.retired[i] && i!==index?'':`<option value="${i}" ${index===i?'selected':''}>${esc(n)}</option>`).join('')}</select>`;
 const empty = msg => `<div class="card empty muted">${msg}</div>`;
 const errorBox = '<div class="error" role="alert"></div>';
 const setError = (form,msg) => { $('.error',form).textContent=msg; };
 const order = records => [...records].reverse().sort((a,b)=>b.date.localeCompare(a.date));
-let database, state, page='trips', editing=null, refundID=null, rateFlag='', pending=false, fxBusy=false, toastTimer;
+let database, state, page='trips', editing=null, refundID=null, pending=false, toastTimer;
 let selectedTrip=null;
 
 function toast(msg) {
@@ -48,7 +49,7 @@ async function commit(updated,change) {
   state=await readState();
 }
 function go(next, id=null) {
-  if(!state.trip && !['trips','settings'].includes(next))next='trips';
+  if(!state.trip && !['trips','quick','settings'].includes(next))next='trips';
   if(next==='entry' && state.trip?.archived)next='list';
   if(next==='split' && travelerCount(state.trip)<2)next='trips';
   page=next;
@@ -58,24 +59,58 @@ function go(next, id=null) {
   scrollTo(0,0);
 }
 function render() {
-  if(!state.trip && page!=='settings')page='trips';
+  if(!state.trip && !['quick','settings'].includes(page))page='trips';
   $('#trip-title').textContent=state.trip ? state.trip.title+(state.trip.archived?' · 已結案（唯讀）':'') : '我的旅程';
 
-  $('[data-page=entry]').hidden=Boolean(state.trip?.archived);
+  const inTrip=state.trip && !['trips','quick','settings'].includes(page);
+  const nav=$('#trip-navigation');
+  nav.hidden=!inTrip;
+  nav.innerHTML=inTrip?[
+    ['overview','專案首頁'],['entry','記帳'],['list','明細'],['refund','退稅'],['budget','預算'],['split','旅遊分攤']
+  ].filter(([id])=>(id!=='entry'||!state.trip.archived)&&(id!=='split'||travelerCount(state.trip)>1))
+   .map(([id,title])=>`<button data-page="${id}">${title}</button>`).join(''):'';
+
   document.querySelectorAll('[data-page]').forEach(b=>{
     if(b.dataset.page===page)b.setAttribute('aria-current','page');
     else b.removeAttribute('aria-current');
   });
-  const views={trips:tripsView,entry:entryView,list:listView,refund:refundView,split:splitView,budget:budgetView,settings:settingsView};
+  const views={trips:tripsView,overview:overviewView,quick:quickView,entry:entryView,list:listView,refund:refundView,split:splitView,budget:budgetView,settings:settingsView};
   views[page]();
 }
-function rateText(rate=state.rate) {
-  return rate ? `1 日圓 ≈ ${rate.value.toFixed(5)} 台幣 · ${rate.source} · ${localTime(rate.time)}` : '尚無匯率，請輸入 1 日圓可換的台幣金額';
+const fixedRate = trip=>rateOK(trip.fixedRate)?{value:trip.fixedRate,time:new Date().toISOString(),source:'旅程固定匯率'}:null;
+const rateText = rate=>rate ? `1 日圓 ＝ ${rate.value} 台幣 · ${rate.source}` : '未設定換算匯率';
+const currencyNames={JPY:'日圓 JPY',TWD:'台幣 TWD',USD:'美元 USD',EUR:'歐元 EUR',KRW:'韓元 KRW',HKD:'港幣 HKD'};
+const currencySelect=(name,chosen='JPY')=>`<select name="${name}">${currencies.map(c=>`<option value="${c}" ${c===chosen?'selected':''}>${currencyNames[c]}</option>`).join('')}</select>`;
+const currencyAmount=(n,c,decimals=0)=>new Intl.NumberFormat('zh-TW',{style:'currency',currency:c,currencyDisplay:c==='JPY'||c==='TWD'?'symbol':'code',minimumFractionDigits:0,maximumFractionDigits:decimals}).format(n);
+
+function overviewView(){
+  const t=state.trip;
+  app.innerHTML=`<h1>${esc(t.title)}</h1><section class="card">
+    <p>${t.archived?'已結案（唯讀）':travelerCount(t)+' 人旅程'}</p>
+    <p class="muted">${rateText(fixedRate(t))}</p>
+    <div class="actions">${t.archived?button('重新啟用','reopen:'+esc(t.id)):button('新增記帳','new','primary')+button('編輯旅程','trip-edit:'+esc(t.id))}
+    ${button('返回旅程專案','trip-cancel')}</div></section>`;
 }
-function currentRateText() {
-  const fallback = state.rate?.source==='ExchangeRate-API' && (!navigator.onLine || rateFlag || (state.rate.next && state.rate.next<Date.now()));
-  return esc((fallback?'沿用最後匯率 · ':'')+rateText()+(rateFlag?' · '+rateFlag:''));
+
+function quickView(){
+  app.innerHTML=`<h1>快速分攤</h1><form id="quick-form" class="card grid">
+    ${label('消費總金額',input('total','','type="number" min="0" step="any" inputmode="decimal"'))}
+    ${label('結算幣別',currencySelect('currency','TWD'))}
+    ${label('分攤總人數',input('count',2,'type="number" min="1" step="1" inputmode="numeric"'))}
+    <div class="full"><output id="quick-result" aria-live="polite"></output>${check('roundHundred','無條件進位至百位數')}</div>
+    </form>`;
+  const f=$('#quick-form');
+  const update=()=>{
+    const total=num(f,'total'), count=num(f,'count'), currency=value(f,'currency');
+    const raw=total!==null && total>=0 && Number.isSafeInteger(count) && count>=1?total/count:NaN;
+    const rounded=roundShare(raw,marked(f,'roundHundred'));
+    $('#quick-result').textContent=Number.isFinite(raw)?`每人應付 ${currencyAmount(rounded,currency)} · 原始 ${currencyAmount(raw,currency,2)} · 差額 ${currencyAmount(rounded-raw,currency,2)}`:'請輸入金額及分攤人數。';
+  };
+  f.onsubmit=e=>e.preventDefault();
+  f.oninput=update;
+  update();
 }
+
 function tripsView() {
   const group=archived=>state.trips.filter(t=>t.archived===archived).map(t=>`<article class="trip-item">
     <div><small>${t.id===state.trip?.id?'目前旅程 · ':''}${travelerCount(t)>1?'同行 '+travelerCount(t)+' 人':'獨旅'}</small>
@@ -83,7 +118,6 @@ function tripsView() {
     <div class="actions">${button(archived?'查閱':'進入','switch:'+esc(t.id))}
     ${archived?button('重新啟用','reopen:'+esc(t.id)):button('編輯','trip-edit:'+esc(t.id))+button('結案','close:'+esc(t.id))}</div></article>`).join('');
   app.innerHTML=`<div class="row"><h1>我的旅程</h1>${button('＋ 新增旅程','trip-new','primary')}</div>
-    ${travelerCount(state.trip)>1?button('同行分攤與結算','view-split'):''}
     <h2 class="trip-group">進行中</h2>${group(false)||empty('目前沒有進行中的旅程。')}
     <h2 class="trip-group">已結案</h2>${group(true)||'<p class="muted">目前沒有已結案的旅程。</p>'}`;
 }
@@ -95,9 +129,12 @@ function tripEditor(id) {
     ${label('旅程專案名稱',input('title',t?.title,'required maxlength="100" placeholder="例如：2026 關西旅誌"'),'full')}
     ${label('同行人數（含自己）',input('count',travelerCount(t),'type="number" min="1" step="1" inputmode="numeric"'),'full')}
     <div class="full grid" id="party-fields"></div>
-    <details class="full"><summary>日期備註、預算與換匯（選填）</summary><div class="grid">
+    ${label('固定匯率（選填）：1 日圓等於多少台幣',input('fixedRate',t?.fixedRate,rateInput),'full')}
+    ${label('分攤結算幣別',currencySelect('currency',t?.currency),'full')}
+    ${label('外幣固定換算：1 日圓等於多少結算幣',input('foreignRate',t?.foreignRate,rateInput),'full')}
+    <details class="full"><summary>日期備註與預算（選填）</summary><div class="grid">
     ${label('出發日期',input('start',t?.start,'type="date"'))}${label('回國日期',input('end',t?.end,'type="date"'))}
-    ${label('旅程總預算（日圓）',input('budget',t?.budget,number))}${label('初始日圓現金',input('opening',t?.opening,number))}${label('實際換匯匯率',input('cashRate',t?.cashRate,rateInput))}</div></details>
+    ${label('旅程總預算（日圓）',input('budget',t?.budget,number))}${label('初始日圓現金',input('opening',t?.opening,number))}</div></details>
     ${errorBox}<div class="full actions"><button class="primary" type="submit">${t?'儲存旅程':'建立並啟用'}</button>${button('取消','trip-cancel')}</div></form>`;
   const f=$('#trip-form'), count=field(f,'count'), party=$('#party-fields');
   const active=()=>members.filter(m=>!m.retired);
@@ -113,6 +150,13 @@ function tripEditor(id) {
   }
   draw();
   count.onchange=draw;
+  const showForeign=()=>{
+    const optional=['JPY','TWD'].includes(value(f,'currency'));
+    field(f,'foreignRate').closest('label').hidden=optional;
+    field(f,'foreignRate').disabled=optional;
+  };
+  field(f,'currency').onchange=showForeign;
+  showForeign();
   f.oninput=e=>{
     if(e.target.name.startsWith('person'))members[Number(e.target.name.slice(6))].name=e.target.value;
   };
@@ -123,11 +167,11 @@ function tripEditor(id) {
     if(!Number.isSafeInteger(peopleCount)||peopleCount<1){setError(f,'請輸入有效的同行人數。');return;}
     draw();
     const split=peopleCount>1;
-    const trip={...t,memberIds:members.map(m=>m.id??crypto.randomUUID()),budget:num(f,'budget'),opening:num(f,'opening'),cashRate:num(f,'cashRate'),id:t?.id??crypto.randomUUID(),title:value(f,'title'),start:value(f,'start'),end:value(f,'end'),
+    const trip={...t,memberIds:members.map(m=>m.id??crypto.randomUUID()),budget:num(f,'budget'),opening:num(f,'opening'),fixedRate:num(f,'fixedRate'),currency:value(f,'currency'),foreignRate:num(f,'foreignRate'),id:t?.id??crypto.randomUUID(),title:value(f,'title'),start:value(f,'start'),end:value(f,'end'),
       split,archived:t?.archived??false,names:members.map((m,i)=>m.name.trim()||'旅伴 '+(i+1)),retired:members.map(m=>m.retired)};
     if(!validTrip(trip)){setError(f,'請檢查名稱、人數及選填資料。');return;}
     pending=true;
-    try {await commit(state,{trip,active:trip.id});go('entry');toast('已儲存旅程');}
+    try {await commit(state,{trip,active:trip.id});go('overview');toast('已儲存旅程');}
     catch {setError(f,'儲存失敗，請重試。');}
     finally {pending=false;}
   };
@@ -180,38 +224,13 @@ function tripLockForm(trip,operation){
       await transitionTrip(database,trip.id,operation,proof,newLock);
       if(closing)state=await readState();
       else await commit(state,{active:trip.id});
-      go(closing?'trips':'entry');
+      go(closing?'trips':'overview');
       toast(closing?'旅程已結案':'旅程已重新啟用');
     } catch {setError(f,'未能更新旅程，請返回列表後重試。');}
     finally {pending=false;}
   };
 }
 
-async function refreshRate(force=false) {
-  if (fxBusy || (!force && state.rate?.next>Date.now())) return;
-  if (!navigator.onLine) {rateFlag='目前離線';connectivity();return;}
-  fxBusy=true;
-  let timer;
-  try {
-    const controller=new AbortController();
-    timer=setTimeout(()=>controller.abort(),7000);
-    const response=await fetch('https://open.er-api.com/v6/latest/JPY',{signal:controller.signal,cache:'no-store'});
-    if (!response.ok) throw Error();
-    const data=await response.json();
-    if (data.result!=='success' || !rateOK(data.rates?.TWD) || !Number.isFinite(data.time_last_update_unix) || !Number.isFinite(data.time_next_update_unix)) throw Error();
-    const rate={value:data.rates.TWD,time:new Date(data.time_last_update_unix*1000).toISOString(),next:data.time_next_update_unix*1000,source:'ExchangeRate-API'};
-    const current=await readState();
-    await commit({...current,rate},{settings:['rate']});
-    rateFlag='';
-  } catch { rateFlag='匯率來源暫時無法連線'; }
-  finally { clearTimeout(timer); fxBusy=false; }
-  if ($('#fx-status')) $('#fx-status').innerHTML=currentRateText();
-  const form=$('#entry-form');
-  if (form && !editing && !field(form,'rate').dataset.changed && state.rate) {
-    field(form,'rate').value=(value(form,'payment')==='現金'?state.trip.cashRate:null)??state.rate.value;
-    previewEntry(form);
-  }
-}
 function entryView() {
   const r=state.records.find(r=>r.id===editing);
   const shared=travelerCount(state.trip)>1;
@@ -221,9 +240,9 @@ function entryView() {
         ${label('日期',input('date',r?.date??dateNow(),'type="date" required'))}
         ${label('付款方式',select('payment',methods,r?.payment))}
         ${label('店家',input('store',r?.store,'list="shop-list" required maxlength="100" placeholder="選擇或輸入店家"')+`<datalist id="shop-list">${state.stores.map(s=>option(s.name)).join('')}</datalist>`)}
-        ${label('分類',select('category',categories,r?.category??'其他'))}
-        <details class="full"><summary>分店、餐飲及備註</summary><div class="grid">${label('分店（選填）',input('branch',r?.branch,'maxlength="100" placeholder="例：道頓堀店"'))}
-        ${check('food','餐飲／在日消費',r?.food)}
+        ${label('科目',select('category',categories,r?categoryOf(r):'其他'))}
+        <div id="tax-toggle" class="full">${check('taxRequested','是否申請退稅',Boolean(r && refundRequested(r)))}</div>
+        <details class="full"><summary>分店及備註</summary><div class="grid">${label('分店（選填）',input('branch',r?.branch,'maxlength="100" placeholder="例：道頓堀店"'))}
         ${label('備註',input('note',r?.note,'maxlength="500"'), 'full')}</div></details>
       </section>
       <section class="card grid">
@@ -232,20 +251,21 @@ function entryView() {
         ${label('未稅金額（日圓）',input('net',r?.net,number))}
         ${label('收據稅金（日圓）',input('tax',r?.tax,number))}
         ${label('含稅總額（日圓）',input('total',r?.total,number))}
-        ${label('日圓 → 台幣匯率',input('rate',r?.rate.value??state.trip.cashRate??state.rate?.value,rateInput+' required'))}
-        <div class="full muted" id="fx-status">${currentRateText()}</div>
-        <div class="full actions">${button('更新匯率','update-rate')}<a class="muted" href="https://www.exchangerate-api.com" target="_blank" rel="noopener">Rates By Exchange Rate API</a></div>
+        <p class="full muted">${rateText(r?r.rate:fixedRate(state.trip))}</p>
       </section>
       <div class="hero" aria-live="polite"><div><small>含稅支出</small><strong id="yen-preview">¥0</strong></div><div class="right"><small id="conversion-label"></small><strong id="nt-preview">—</strong></div></div>
-      <p id="card-notice" class="muted">實際台幣金額依信用卡結匯匯率、入帳日期及海外交易手續費為準。</p><details class="card" id="card-post"><summary>信用卡入帳核對（選填）</summary><div class="grid">${label('實際入帳台幣',input('posted',r?.posted,number))}${label('入帳日期',input('postedDate',r?.postedDate,'type="date"'))}</div><output id="post-diff"></output></details>
       <p id="tax-hint" class="muted"></p>
-      ${shared ? `<section class="card grid">
-        <h2 class="full">同行分攤</h2>
-        ${label('誰付款',people('payer',r?.payer??state.trip.retired.indexOf(false)))}
-        ${label('分攤方式',select('mode',[modes[0],modes[3],modes[1],modes[2]],r?.mode))}
-        <div class="full grid" id="participants">${state.names.map((n,i)=>state.trip.retired[i] && !r?.shares?.[i]?'':check('member'+i,esc(n),r?(r.members?.[i]??r.shares?.[i]>0):true)).join('')}</div>
-        <div class="full grid" id="custom-shares">${state.names.map((n,i)=>state.trip.retired[i] && !r?.shares?.[i]?'':label(esc(n),input('share'+i,r?.shares?.[i]||'',number))).join('')}</div>
-        <div class="full muted" id="split-preview"></div>
+      ${shared ? `<section class="card">
+        ${check('shared','是否需要分攤',Boolean(r?.mode && r.mode!==modes[0]))}
+        <div class="grid" id="share-options">
+          ${label('分攤總人數（含本人）',input('splitCount',r?.splitCount??(r?.members?.filter(Boolean).length||travelerCount(state.trip)),'type="number" min="2" max="'+travelerCount(state.trip)+'" step="1" inputmode="numeric"'))}
+          ${label('誰付款',people('payer',r?.payer??state.trip.retired.indexOf(false)))}
+          <details class="full"><summary>指定分攤旅伴</summary><div class="grid" id="participants">
+          ${state.names.map((n,i)=>state.trip.retired[i]?'':check('member'+i,esc(n),false)).join('')}
+          </div></details>
+          <output class="full muted" id="split-preview" aria-live="polite"></output>
+          <div class="full">${check('roundHundred','無條件進位至百位數',r?.roundHundred)}</div>
+        </div>
       </section>` : ''}
       <section class="card">
         <h2>收據照片 <small>選填一張</small></h2>
@@ -260,20 +280,24 @@ function entryView() {
     </form>`;
   const form=$('#entry-form');
   field(form,'amountMode').value=r?.input??'auto';
-  form.originalMembers=r?.mode===modes[3]?r.members:null;
+  form.record=r;
+  if(shared)selectParticipants(form,true);
   form.photo=r?.photo??null;
   form.photoReady=Promise.resolve();
   showPhoto(form);
   previewEntry(form);
   form.addEventListener('input',event=>{
     const name=event.target.name;
-    if(name==='payment'){field(form,'rate').value=(r?.payment===value(form,'payment')?r.rate.value:null)??(value(form,'payment')==='現金'?state.trip.cashRate:null)??state.rate?.value??'';delete field(form,'rate').dataset.changed;}
-    if(name==='mode')form.originalMembers=null;
-    if (name==='rate') field(form,'rate').dataset.changed='yes';
-    if (name==='store') {
-      const found=state.stores.find(s=>s.name===value(form,'store'));
-      if(found)field(form,'category').value=found.category;
+    if(name==='category')field(form,'taxRequested').checked=false;
+    if(name==='store'){
+      const store=state.stores.find(s=>s.name===value(form,'store'));
+      if(store){
+        field(form,'category').value=categoryOf(store);
+        field(form,'taxRequested').checked=false;
+      }
     }
+    if(name==='splitCount')selectParticipants(form,false);
+    if(name.startsWith('member') || ['shared','splitCount','payer','roundHundred'].includes(name))form.splitChanged=true;
     previewEntry(form);
   });
   form.addEventListener('change',event=>{
@@ -298,18 +322,22 @@ function amounts(f) {
   const net=enteredNet??0, tax=input==='auto'?Math.round(net*.1):enteredTax??0;
   return {input,net,tax,total:net+tax};
 }
-function selectedMembers(f,mode) {
-  return state.names.map((_,i)=>mode===modes[3]
-    ? (f.originalMembers?Boolean(f.originalMembers[i]):!state.trip.retired[i])
-    : marked(f,'member'+i));
+function selectedMembers(f){
+  return state.names.map((_,i)=>marked(f,'member'+i));
 }
-function sharesFor(f,total) {
-  const mode=field(f,'mode')?.value;
-  if ([modes[1],modes[3]].includes(mode)) return even(total,selectedMembers(f,mode));
-  return state.names.map((_,i)=> mode===modes[2] && field(f,'share'+i)?num(f,'share'+i)??0:0);
+function selectParticipants(f,initial){
+  const count=num(f,'splitCount');
+  const active=state.names.map((_,i)=>i).filter(i=>field(f,'member'+i));
+  const old=f.record;
+  const preferred=initial&&old?.mode?active.filter(i=>old.members?.[i]??old.shares?.[i]>0):[];
+  const order=[...new Set([active[0],...preferred,...active])].slice(0,count);
+  for(const i of active)field(f,'member'+i).checked=order.includes(i);
 }
 function previewEntry(f) {
-  const a=amounts(f), rate=num(f,'rate'), mode=field(f,'mode')?.value;
+  const a=amounts(f), rate=f.record?f.record.rate:fixedRate(state.trip);
+  const tax=$('#tax-toggle');
+  tax.hidden=value(f,'category')!=='購物';
+  field(f,'taxRequested').disabled=tax.hidden;
   field(f,'net').closest('label').hidden=a.input==='total';
   field(f,'net').required=a.input!=='total';
   field(f,'total').closest('label').hidden=a.input!=='total';
@@ -317,19 +345,24 @@ function previewEntry(f) {
   field(f,'tax').closest('label').hidden=a.input==='auto';
   field(f,'tax').required=a.input==='tax';
   for (const name of ['net','tax','total']) field(f,name).disabled=field(f,name).closest('label').hidden;
-  const card=value(f,'payment')==='信用卡';
-  $('#card-post').hidden=!card;$('#card-notice').hidden=!card;
-  $('#conversion-label').textContent=!card && rate===state.trip.cashRate?'依換匯折合台幣':'預估台幣金額';
-  $('#post-diff').textContent=card&&num(f,'posted')!==null&&rate?'與預估差額 '+nt(num(f,'posted')-Math.round(a.total*rate)):'';
+  $('#conversion-label').textContent='折合台幣';
   $('#yen-preview').textContent=money(a.total);
-  $('#nt-preview').textContent=rateOK(rate)?nt(a.total*rate):'—';
+  $('#nt-preview').textContent=rate?nt(a.total*rate.value):'—';
   $('#tax-hint').textContent=`未稅 ${money(a.net)} · 稅金 ${money(a.tax)}`+
     (a.input==='auto'?' · 按 10% 估算；混合 8%／10% 的藥妝請依收據修正。':a.input==='total'&&num(f,'tax')===null?' · 稅金由含稅額按 10% 反推估算，可填收據稅金。':'');
-  if(!field(f,'mode'))return;
-  $('#participants').hidden=mode!==modes[1];
-  $('#custom-shares').hidden=mode!==modes[2];
-  $('#custom-shares').querySelectorAll('input').forEach(e=>e.disabled=mode!==modes[2]);
-  $('#split-preview').textContent=mode===modes[0]?'':state.names.map((n,i)=>n+' '+money(sharesFor(f,a.total)[i])).join(' · ')+`｜已分配 ${money(sum(sharesFor(f,a.total)))}`;
+  if(!field(f,'shared'))return;
+  const on=marked(f,'shared'), controls=$('#share-options');
+  controls.hidden=!on;
+  controls.querySelectorAll('input,select').forEach(el=>el.disabled=!on);
+  if(!on)return;
+  const count=num(f,'splitCount');
+  const currency=state.trip.currency??'JPY', fx=conversion(state.trip);
+  const raw=count>=2&&rateOK(fx)?a.total/count*fx:null;
+  const amount=raw===null?null:roundShare(raw,marked(f,'roundHundred'));
+  const legacy=f.record?.mode && f.record.mode!==modes[0] && !f.record.splitCount && !f.splitChanged;
+  $('#split-preview').textContent=legacy?'原分攤紀錄保留。調整分攤選項後，本筆會改為均分。':
+    amount===null?'每人應付 —（請確認人數及旅程匯率）':
+    `每人應付 ${currencyAmount(amount,currency)} · 原始 ${currencyAmount(raw,currency,2)} · 差額 ${currencyAmount(amount-raw,currency,2)}`;
 }
 async function compress(file) {
   if(file.size>35*1024*1024)throw Error();
@@ -356,30 +389,42 @@ async function saveEntry(f,old) {
   submit.disabled=true;
   try {
     await f.photoReady;
-    const a=amounts(f), mode=field(f,'mode')?.value, food=marked(f,'food'), store=value(f,'store');
-    if(!mode && old?.mode && old.mode!==modes[0] && old.total!==a.total){
-      setError(f,'此筆金額已用於歷史分攤。請調整為多人旅程後修改金額。');return;
+    const a=amounts(f), store=value(f,'store'), category=value(f,'category');
+    const taxRequested=category==='購物' && marked(f,'taxRequested');
+    const rate=old?old.rate:fixedRate(state.trip);
+    const oldShared=old?.mode && old.mode!==modes[0];
+    const keepShares=oldShared && !f.splitChanged;
+    const members=selectedMembers(f);
+    const count=numIfPresent(f,'splitCount');
+    const payer=numIfPresent(f,'payer');
+    let shareFields={};
+    if(keepShares && a.total!==old.total){
+      if(!field(f,'shared') || old.mode===modes[2]){
+        setError(f,'請在多人旅程調整分攤選項，再修改這筆分攤支出的金額。');return;
+      }
+      const original=state.names.map((_,i)=>old.members?.[i]??old.shares[i]>0);
+      shareFields={members:original,shares:even(a.total,original)};
+    }else if(!keepShares && marked(f,'shared')){
+      if(!Number.isSafeInteger(count) || count<2 || count>travelerCount(state.trip) || members.filter(Boolean).length!==count || !members[state.trip.retired.indexOf(false)]){
+        setError(f,'分攤人數須符合已選旅伴數，並包含本人（第一位旅伴）。');return;
+      }
+      shareFields={mode:modes[1],payer,receiver:old?.receiver??payer,members,shares:even(a.total,members),splitCount:count,roundHundred:marked(f,'roundHundred'),include:Boolean(old?.include)};
+    }else if(!keepShares && old?.mode){
+      shareFields={mode:modes[0],shares:state.names.map(()=>0),members:state.names.map(()=>false),splitCount:undefined,roundHundred:false,include:false};
     }
     const profile=state.stores.find(p=>p.name===store);
-    const val=num(f,'rate');
-    const rate=old?.rate.value===val && old.payment===value(f,'payment')?old.rate:value(f,'payment')==='現金' && val===state.trip.cashRate?{value:val,time:new Date().toISOString(),source:'實際換匯'}:state.rate?.value===val && !field(f,'rate').dataset.changed?state.rate:{value:val,time:new Date().toISOString(),source:'手動'};
-    const r={
-      ...old,...a,posted:value(f,'payment')==='信用卡'?num(f,'posted'):null,postedDate:value(f,'payment')==='信用卡'?value(f,'postedDate'):'',tripId:state.trip.id,id:old?.id??crypto.randomUUID(),date:value(f,'date'),store,branch:value(f,'branch'),note:value(f,'note'),
-      referenceRate:old?.referenceRate??old?.rate??state.rate??rate,category:value(f,'category'),payment:value(f,'payment'),food,rate,photo:f.photo,
-      ...(mode?{mode,payer:num(f,'payer'),shares:sharesFor(f,a.total),members:selectedMembers(f,mode)}:{}),
-      status:food?statuses[3]:old?.food?statuses[0]:old?.status??statuses[0],
+    const r={...old,...a,...shareFields,tripId:state.trip.id,id:old?.id??crypto.randomUUID(),date:value(f,'date'),
+      store,branch:value(f,'branch'),note:value(f,'note'),category,payment:value(f,'payment'),
+      food:category==='餐飲',taxRequested,rate:rate??null,photo:f.photo,
+      legacyCategory:old?.legacyCategory??(old && old.category!==category?old.category:undefined),
+      status:old && old.status!==statuses[3]?old.status:taxRequested?statuses[0]:statuses[3],
       method:old?.method??profile?.method??'',agency:old?.agency??profile?.agency??'',
-      fee:old?old.fee:profile?.fee??null,basis:old?.basis??profile?.basis??'tax',
-      actual:food?null:old?.actual??null,...(food&&old?.mode?{include:false}:{}),...(mode?{include:!food && mode!==modes[0] && Boolean(old?.include),receiver:old?.receiver??num(f,'payer')}:{})
+      fee:old?old.fee:profile?.fee??null,basis:old?.basis??profile?.basis??'tax',actual:old?.actual??null
     };
-    if(!validRecord(r,state.names.length)) {
-      setError(f,'請檢查店名、金額、匯率及分攤合計。已入帳退稅也須小於或等於本筆稅金。');
-      return;
+    if(!validRecord(r,state.names.length)){
+      setError(f,'請檢查店名、金額及分攤。已入帳退稅須小於或等於本筆稅金。');return;
     }
-    const current=await readState();
-    const saveRate=rate.source==='手動' && (!current.rate || current.rate.source==='手動') && (!old || !current.rate);
-    if (saveRate) current.rate=rate;
-    await commit(current,{record:r,settings:saveRate?['rate']:null});
+    await commit(state,{record:r});
     go('list');toast(old?'已儲存修改':'已新增記帳');
   } catch { setError(f,'儲存失敗，請檢查裝置可用空間後重試。'); }
   finally {pending=false;submit.disabled=false;}
@@ -390,13 +435,13 @@ function listView() {
     ${label('查詢店家、日期、分類或備註',input('query','','id="query" type="search" placeholder="輸入關鍵字"'))}<div id="records"></div>`;
   function show() {
     const query=$('#query').value.trim().toLowerCase();
-    const records=order(state.records).filter(r=>[r.store,r.date,r.category,r.branch,r.note,r.payment].join(' ').toLowerCase().includes(query));
+    const records=order(state.records).filter(r=>[r.store,r.date,r.category,r.branch,r.note,r.payment,categoryOf(r)].join(' ').toLowerCase().includes(query));
     $('#records').innerHTML=records.length?records.map(r=>`<article class="card">
-      <div class="row"><div><h3>${esc(r.store)} ${esc(r.branch)}</h3><p class="muted">${r.date} · ${r.category} · ${r.payment}${r.food?' · 餐飲':''}</p></div>
-      <div class="right"><div class="amount">${money(r.total)}</div><small>${r.rate.source==='實際換匯'?'折合':'預估'} ${nt(r.total*r.rate.value)}</small></div></div>
+      <div class="row"><div><h3>${esc(r.store)} ${esc(r.branch)}</h3><p class="muted">${r.date} · ${categoryOf(r)} · ${r.payment}</p></div>
+      <div class="right"><div class="amount">${money(r.total)}</div><small>${r.rate?'折合 '+nt(r.total*r.rate.value):'台幣 —'}</small></div></div>
       <p class="muted">${travelerCount(state.trip)>1?(r.mode?esc(state.names[r.payer])+'付款 · '+r.mode:'個人支出'):''}${r.note?' · '+esc(r.note):''}</p>
-      <details><summary>查看金額與收據</summary>${r.posted!=null?'<p>實際入帳 '+nt(r.posted)+' · 與預估差額 '+nt(r.posted-Math.round(r.total*r.rate.value))+' '+esc(r.postedDate)+'</p>':''}<p class="muted">未稅 ${money(r.net)} · 稅金 ${money(r.tax)} · ${esc(rateText(r.rate))}</p>${r.photo?`<img class="receipt" loading="lazy" alt="收據照片" src="${r.photo}">`:''}</details>
-      <div class="actions divider">${state.trip.archived?button('查閱退稅','refund:'+esc(r.id)):button('修改','edit:'+esc(r.id))+button('退稅','refund:'+esc(r.id))+button('刪除','delete:'+esc(r.id),'danger')}</div>
+      <details><summary>查看金額與收據</summary>${r.posted!=null?'<p>實際入帳 '+nt(r.posted)+' '+esc(r.postedDate)+'</p>':''}<p class="muted">未稅 ${money(r.net)} · 稅金 ${money(r.tax)} · ${esc(rateText(r.rate))}</p>${r.photo?`<img class="receipt" loading="lazy" alt="收據照片" src="${r.photo}">`:''}</details>
+      <div class="actions divider"> ${state.trip.archived?(refundRequested(r)||historicalRefund(r)?button('查閱退稅','refund:'+esc(r.id)):''):button('修改','edit:'+esc(r.id))+(refundRequested(r)||historicalRefund(r)?button('退稅','refund:'+esc(r.id)):'')+button('刪除','delete:'+esc(r.id),'danger')}</div>
     </article>`).join(''):empty(query?'找不到符合條件的紀錄。':'帳本目前沒有支出。');
   }
   $('#query').oninput=show;
@@ -411,22 +456,31 @@ const official=`<details class="card"><summary>關西國際機場退稅流程</s
   <div class="actions"><a href="https://www.customs.go.jp/kaigairyoko/taxrefund.htm" target="_blank" rel="noopener">日本海關</a><a href="https://www.mlit.go.jp/kankocho/tax-free/content/001991773.pdf" target="_blank" rel="noopener">日本觀光廳</a><a href="https://www.kixdutyfree.jp/en/airport_tax_refund_guide_info.html" target="_blank" rel="noopener">關西機場指南</a><a href="https://ppih.co.jp/news/2026/pr/" target="_blank" rel="noopener">PPIH 公告</a></div>
 </details>`;
 const basisSelect = v => `<select name="basis"><option value="tax" ${v==='tax'?'selected':''}>按稅金</option><option value="total" ${v==='total'?'selected':''}>按含稅支出</option></select>`;
+const historicalRefund = r=>r.actual!==null || r.status===statuses[1] || (r.taxRequested===undefined && refundRequested(r));
+const refundAmount = (amount,rate)=>money(amount)+(rate?' · 約 '+nt(amount*rate.value):'');
+function recordedConversion(records,amountOf){
+  const amounts=records.map(r=>({yen:amountOf(r),rate:r.rate?.value})).filter(x=>x.yen!==0);
+  if(!amounts.length || amounts.some(x=>!rateOK(x.rate)))return '';
+  return '約 '+nt(sum(amounts.map(x=>x.yen*x.rate)));
+}
 function refundView() {
   const r=state.records.find(r=>r.id===refundID);
-  if(r){refundForm(r);return;}
+  if(r && (refundRequested(r)||historicalRefund(r))){refundForm(r);return;}
+  const listed=state.records.filter(r=>refundRequested(r) || historicalRefund(r));
   const active=state.records.filter(r=>r.status===statuses[1] && r.fee!==null && threshold(r,state.records)>=5000);
   const received=sum(state.records.map(r=>r.actual??0));
-  app.innerHTML=`<h1>退稅</h1><div class="hero"><div><small>預計淨退稅 · 已知費率</small><strong>${money(sum(active.map(r=>Math.max(0,r.tax-feeAmount(r)))))}</strong></div><div class="right"><small>實際已入帳</small><strong>${money(received)}</strong></div></div>
+  const estimateOf=r=>Math.max(0,r.tax-feeAmount(r));
+  app.innerHTML=`<h1>退稅</h1><div class="hero"><div><small>預計淨退稅 · 已知費率</small><strong>${money(sum(active.map(estimateOf)))}</strong><small>${recordedConversion(active,estimateOf)}</small></div><div class="right"><small>實際已入帳</small><strong>${money(received)}</strong><small>${recordedConversion(state.records,r=>r.actual??0)}</small></div></div>
     ${official}
-    ${state.records.length?order(state.records).map(r=>{
+    ${listed.length?order(listed).map(r=>{
       const subtotal=threshold(r,state.records);
       const fee=feeAmount(r);
       const qualified=subtotal!==null && subtotal>=5000;
       return `<article class="card"><div class="row"><div><h3>${esc(r.store)} ${esc(r.branch)}</h3><small>${r.date} · ${r.method||'退稅方式待選'}</small></div><span class="pill">${r.status}</span></div>
-        ${r.status===statuses[3]?'':`<p class="muted divider">${qualified?'達金額門檻參考':'資格待確認'} · 估計稅額 ${money(r.tax)} · 手續費 ${fee===null?'待確認':money(fee)} · 預估淨額 ${fee===null||!qualified?'待確認':money(Math.max(0,r.tax-fee))}</p>`}
-        ${r.actual===null?'':`<p class="amount">已入帳 ${money(r.actual)}</p>`}
+        ${r.status===statuses[3]?'':`<p class="muted divider">${qualified?'達金額門檻參考':'資格待確認'} · 估計稅額 ${money(r.tax)} · 手續費 ${fee===null?'待確認':money(fee)} · 預估淨額 ${fee===null||!qualified?'待確認':refundAmount(Math.max(0,r.tax-fee),r.rate)}</p>`}
+        ${r.actual===null?'':`<p class="amount">已入帳 ${refundAmount(r.actual,r.rate)}</p>`}
         ${button(state.trip.archived?'查閱退稅':'編輯退稅','refund:'+esc(r.id))}</article>`;
-    }).join(''):empty('新增支出後即可登記退稅。')}`;
+    }).join(''):empty('記帳選擇購物並勾選申請退稅，即可在此登記。')}`;
 }
 function refundForm(r) {
   const readonly=state.trip.archived;
@@ -493,25 +547,30 @@ function refundForm(r) {
     finally {pending=false;}
   };
 }
-function splitView() {
+function splitView(){
+  const t=state.trip, currency=t.currency??'JPY', rate=conversion(t);
   const grouped=order(state.records).filter(r=>r.mode && r.mode!==modes[0]);
-  const {transfers,jpy,paid,due,advances}=settlement(grouped,state.names.length);
-  app.innerHTML=`<h1>同行分攤</h1><p class="muted">以日圓結算，台幣以分攤支出的平均入帳匯率估算。</p>
-    ${state.trip.archived?'':button('編輯旅伴','trip-edit:'+esc(state.trip.id))}
-    <section class="card"><h2>每位旅伴</h2>${state.names.map((n,i)=>`<div class="divider"><strong>${esc(n)}${state.trip.retired[i]?'（已退出）':''}</strong><p class="muted">應付 ${money(due[i])} · 已付（扣退款）${money(paid[i])} · 原代墊 ${money(advances[i])}<br>結算${jpy[i]>=0?'應收':'應付'} ${money(Math.abs(jpy[i]))}</p></div>`).join('')}</section>
-    <section class="card"><h2>應付金額</h2>
-      ${transfers.length?transfers.map(t=>`<div class="row divider"><strong>${esc(state.names[t.from])} 付給 ${esc(state.names[t.to])}</strong><div class="right"><div class="amount">${money(t.amount)}</div><small>約 ${nt(t.twd)}</small></div></div>`).join(''):'<p class="muted">目前沒有待結算金額。</p>'}
-    </section><h2>分攤明細</h2>
-    ${grouped.length?grouped.map(r=>{
+  const hasRate=rateOK(rate), fmt=n=>currencyAmount(n,currency);
+  const result=hasRate?settlement(grouped,state.names.length,rate):null;
+  app.innerHTML=`<h1>旅遊分攤</h1><p>結算幣別 ${currencyNames[currency]}</p>
+    ${t.archived?'':button('編輯旅伴與結算幣別','trip-edit:'+esc(t.id))}
+    ${!hasRate?'<p class="card">尚未設定此結算幣別的固定匯率。</p>':`<section class="card"><h2>每位旅伴</h2>
+      ${state.names.map((n,i)=>`<div class="divider"><strong>${esc(n)}${t.retired[i]?'（已退出）':''}</strong>
+      <p class="muted">應付 ${fmt(result.due[i])} · 已付（扣退款）${fmt(result.paid[i])} · 原代墊 ${fmt(result.advances[i])}<br>
+      結算${result.net[i]>=0?'應收':'應付'} ${fmt(Math.abs(result.net[i]))}</p></div>`).join('')}</section>
+      <section class="card"><h2>應付金額</h2>${result.transfers.length?result.transfers.map(x=>
+        `<div class="row divider"><strong>${esc(state.names[x.from])} 付給 ${esc(state.names[x.to])}</strong><div class="amount">${fmt(x.amount)}</div></div>`).join(''):'<p class="muted">目前沒有待結算金額。</p>'}</section>`}
+    <h2>分攤明細</h2>${grouped.map(r=>{
       const refund=r.include && r.status===statuses[2]?r.actual:0;
-      const back=refundShares(refund,r.shares);
-      return `<details class="card"><summary>${esc(r.store)} ${esc(r.branch)} · ${r.date} · ${money(r.total-refund)}</summary>
-        <p>原支出 ${money(r.total)} · 納入已退 ${money(refund)} · 分攤後 ${money(r.total-refund)}</p>
-        <p>付款人 ${esc(state.names[r.payer])}${refund?' · 退款收款人 '+esc(state.names[r.receiver]):''}</p>
-        ${r.shares.map((n,i)=>`<p class="muted">${esc(state.names[i])} · 原分攤 ${money(n)} · 扣回 ${money(back[i])} · 淨額 ${money(n-back[i])}</p>`).join('')}
-        ${state.trip.archived?'':button('修改記帳','edit:'+esc(r.id))}
+      const parts=hasRate?settlementParts(r,rate):null;
+      return `<details class="card"><summary>${esc(r.store)} · ${r.date} · ${money(r.total-refund)}</summary>
+        <p>原支出 ${money(r.total)} · 納入已退 ${money(refund)}</p>
+        <p>付款人 ${esc(state.names[r.payer])}</p>
+        ${r.shares.map((n,i)=>n||r.members?.[i]?`<p class="muted">${esc(state.names[i])} · 記帳分攤 ${money(n)}
+          ${parts?` · 原始 ${currencyAmount(parts[i].original,currency,2)} · 結算 ${fmt(parts[i].amount)} · 差額 ${currencyAmount(parts[i].difference,currency,2)}`:''}</p>`:'').join('')}
+        ${t.archived?'':button('修改記帳','edit:'+esc(r.id))}
       </details>`;
-    }).join(''):empty('記帳時選擇分攤方式，這裡就會顯示明細。')}`;
+    }).join('')||empty('記帳時可勾選「是否需要分攤」。')}`;
 }
 function settingsView() {
   app.innerHTML=`<h1>設定與備份</h1>
@@ -533,7 +592,7 @@ function profileEditor(group,index) {
   const container=$('#profile-editor');
   container.innerHTML=`<form class="grid divider" id="profile-form">
     ${label(store?'店家名稱':'機構名稱',input('name',record?.name,'required maxlength="100"'))}
-    ${store?label('分類',select('category',categories,record?.category??'其他')):''}
+    ${store?label('分類',select('category',categories,record?categoryOf(record):'其他')):''}
     ${label('退稅方式',select('method',['',...methods],record?.method))}
     ${store?label('退稅機構',select('agency',['',...state.agencies.map(a=>a.name)],record?.agency)) : ''}
     ${label('手續費（%）',input('fee',record?.fee,percent+' placeholder="留空＝待確認"'))}
@@ -615,11 +674,10 @@ async function action(raw) {
   if(state.trip?.archived && ['new','edit','delete'].includes(name)){toast('請先重新啟用旅程再修改。');return;}
   switch(name) {
     case 'prior':await exportBackup(true);break;
-    case 'view-split':go('split');break;
     case 'trip-new':page='trips';tripEditor();break;
     case 'trip-edit':if(trip && !trip.archived){page='trips';tripEditor(id);}break;
     case 'trip-cancel':go('trips');break;
-    case 'switch':await commit(state,{active:id});go(trip.archived?'list':'entry');break;
+    case 'switch':await commit(state,{active:id});go('overview');break;
     case 'close':if(trip && !trip.archived)tripLockForm(trip,'close');break;
     case 'reopen':if(trip?.archived)tripLockForm(trip,'reopen');break;
     case 'recover':if(trip?.archived && trip.lock)tripLockForm(trip,'recover');break;
@@ -629,7 +687,6 @@ async function action(raw) {
     case 'open-settings':go('settings');break;
     case 'edit':go('entry',id);break;
     case 'refund':go('refund',id);break;
-    case 'update-rate':await refreshRate(true);toast(rateFlag||'匯率已更新');break;
     case 'remove-photo':{
       const f=$('#entry-form');
       f.photo=null;f.photoReady=Promise.resolve();
@@ -655,11 +712,6 @@ document.addEventListener('click',e=>{
   if(b.id==='settings')go('settings');
   if(b.dataset.action)action(b.dataset.action).catch(()=>toast('操作未完成，請重試。'));
 });
-function connectivity() {
-  if($('#fx-status'))$('#fx-status').innerHTML=currentRateText();
-}
-window.addEventListener('online',()=>{connectivity();if(state)refreshRate();});
-window.addEventListener('offline',connectivity);
 try {
   database=await openDB();
   state=await readState();
@@ -667,7 +719,6 @@ try {
 
   app.removeAttribute('aria-busy');
   render();
-  refreshRate();
   if('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'}).then(()=>navigator.serviceWorker.ready).then(()=>{
       offlineReady=true;showOffline();
@@ -678,29 +729,74 @@ try {
   app.innerHTML='<h1>帳本無法開啟</h1><p>'+esc(error.message.includes('舊版')?error.message:'請確認瀏覽器允許本機儲存，再重新開啟網站。')+'</p>';
 }
 
+function categoryBudgetTable(trip,records){
+  const actual=Object.fromEntries(categories.map(c=>[c,0]));
+  for(const record of records)actual[categoryOf(record)]+=record.total;
+  return `<section class="card"><h2>分類預算比較（日圓）</h2>
+    <table class="budget-table"><thead><tr><th scope="col">科目</th><th scope="col">預算</th><th scope="col">實際支出</th><th scope="col">差異（百分比）</th></tr></thead><tbody>
+    ${categories.map(c=>{
+      const budget=trip.categoryBudgets?.[c], spent=actual[c], diff=spent-budget;
+      const ratio=budget>0?'（'+(Math.abs(diff)/budget*100).toLocaleString('zh-TW',{maximumFractionDigits:1})+'%）':'';
+      const kind=diff>0?'over':diff<0?'under':'equal';
+      const status=diff>0?'超支':diff<0?'節約':'符合預算';
+      return `<tr><th scope="row">${c}</th><td>${budget==null?'—':budget.toLocaleString('zh-TW')}</td><td>${spent.toLocaleString('zh-TW')}</td>
+        <td class="${budget==null?'':kind}">${budget==null?'—':status+(diff?Math.abs(diff).toLocaleString('zh-TW'):'')+ratio}</td></tr>`;
+    }).join('')}</tbody></table></section>`;
+}
+function categoryBudgetForm(trip){
+  return `<details class="card"><summary>設定分類預算（選填）</summary><form id="category-budget-form" class="grid">
+    ${label('科目',select('category',categories,categories[0]))}
+    ${label('預算（日圓）',input('amount',trip.categoryBudgets?.[categories[0]],number+' placeholder="留空為未設定"'))}
+    <div class="actions full"><button type="submit" class="primary">儲存此科目</button></div>
+    ${errorBox}
+    </form></details>`;
+}
+function bindCategoryBudget(trip){
+  const form=$('#category-budget-form');
+  field(form,'category').onchange=()=>{field(form,'amount').value=trip.categoryBudgets?.[value(form,'category')]??'';};
+  form.onsubmit=async e=>{
+    e.preventDefault();
+    if(pending)return;
+    const category=value(form,'category'), amount=num(form,'amount');
+    if(!categories.includes(category) || (amount!==null && !yen(amount)))return;
+    pending=true;
+    try{
+      await commit(state,{categoryBudget:{tripId:trip.id,category,amount}});
+      budgetView();
+      $('#category-budget-form').closest('details').open=true;
+      field($('#category-budget-form'),'category').value=category;
+      field($('#category-budget-form'),'category').onchange();
+      toast('已儲存分類預算');
+    }catch{setError(form,'未能儲存分類預算。');}
+    finally{pending=false;}
+  };
+}
 function budgetView(){
   const t=state.trip, totals=summary(t,state.records);
-  const rate=t.cashRate??state.rate?.value;
-  const display=n=>money(n)+(rate?' <small>約 '+nt(n*rate)+'</small>':'');
+  const rate=t.fixedRate;
+  const display=n=>money(n);
   const line=(name,n)=>`<div class="budget-line"><span>${name}</span><strong>${display(n)}</strong></div>`;
   const kinds=['額外換匯','ATM 提款','現金退款','現金補充','現金調整增加','現金調整減少','其他現金移出'];
   const ratio=t.budget?Math.round(totals.spent/t.budget*100):null;
   app.innerHTML=`<h1>旅程預算</h1><h2>${esc(t.title)}</h2>
-    <section class="card"><div class="row"><h2>累計消費</h2><strong class="amount">${display(totals.spent)}</strong></div>
-    ${t.budget!=null?line('旅程總預算',t.budget)+line(totals.spent>t.budget?'預算超支':'剩餘預算',Math.abs(t.budget-totals.spent)):'<p>尚未設定總預算</p>'}
+    <p class="muted">${rateText(fixedRate(t))}</p>
+    ${categoryBudgetTable(t,state.records)}
+    ${t.archived?'':categoryBudgetForm(t)}
+    <section class="card"><div class="row"><h2>累計消費</h2><strong class="amount">${display(totals.spent)}<small>${recordedConversion(state.records,r=>r.total)}</small></strong></div>
+    ${t.budget!=null?line('旅程總預算',t.budget)+(rate?'<p class="muted">總預算折合約 '+nt(t.budget*rate)+'</p>':'')+line(totals.spent>t.budget?'預算超支':'剩餘預算',Math.abs(t.budget-totals.spent)):'<p>尚未設定總預算</p>'}
     ${ratio==null?'':`<progress max="100" value="${Math.min(100,ratio)}"></progress> 已使用 ${ratio}%`}
     ${line('現金支出',totals.cash)}${line('信用卡支出',totals.card)}${line('其中雜項支出',totals.misc)}
     ${line('手上剩餘現金',totals.wallet)}${line('預估可退稅（已知費率）',totals.estimate)}${line('已收到退稅',totals.received)}
     ${t.archived?'':button('編輯預算與初始現金','trip-edit:'+esc(t.id))}</section>
     ${t.archived?'':`<form class="card grid" id="count-form"><h2 class="full">每日現金核對</h2>
     ${label('核對日期',input('date',dateNow(),'type="date" required'))}${label('實際清點日圓',input('count','',number+' required'))}
-    ${!rate?label('日圓換台幣匯率（補記差額時使用）',input('countRate','',rateInput)):''}
     <output id="count-result" class="full"></output><button class="primary full" type="submit">確認核對</button></form>
     <details class="card" id="movement"><summary>新增現金異動</summary><form class="grid" id="flow-form">
     ${label('異動項目',select('kind',kinds))}${label('日期',input('date',dateNow(),'type="date" required'))}${label('日圓金額',input('amount','',number+' required'))}
     <button type="submit">儲存異動</button></form></details>`}
     <details class="card"><summary>現金異動與清點紀錄</summary>${state.records.some(r=>r.status==='已退稅'&&r.method==='現金'&&!r.receivedDate)?'<p>舊版現金退稅尚無入帳日，暫按消費日計入；可在退稅明細補登。</p>':''}${(t.movements??[]).slice().reverse().map(m=>`<p>${esc(m.date)} · ${esc(m.kind)}　${money(m.amount)}</p>`).join('')}${(t.checks??[]).slice().reverse().map(c=>`<p>${esc(c.date)} · 清點 ${money(c.amount)} · 補記 ${money(c.diff)}</p>`).join('')}</details>`;
   if(t.archived)return;
+  bindCategoryBudget(t);
   const f=$('#count-form'), flow=$('#flow-form');
   function preview(){
     const counted=num(f,'count'),day=value(f,'date'),wallet=summary(t,state.records,day).wallet;
@@ -715,7 +811,7 @@ function budgetView(){
     try{
       const count=e.target===f,form=e.target,amount=num(form,count?'count':'amount');
       if(!count&&!amount){toast('請輸入正整數');return;}
-      await updateCash(database,t.id,value(form,'date'),amount,count?'清點':value(form,'kind'),t.cashRate?{value:t.cashRate,time:new Date().toISOString(),source:'實際換匯'}:state.rate??(field(form,'countRate')&&num(form,'countRate')?{value:num(form,'countRate'),time:new Date().toISOString(),source:'手動'}:null));
+      await updateCash(database,t.id,value(form,'date'),amount,count?'清點':value(form,'kind'),fixedRate(t));
       state=await readState();budgetView();toast('已儲存');
     }catch{toast('未能儲存，請確認匯率與旅程狀態。');}finally{pending=false;}
   }
